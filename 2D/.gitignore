@@ -1,6 +1,10 @@
-[DBG]**
+res/*.jfif
+res/*.jpeg
+res/van_gogh_short.git
+res/van_gogh_medium.git
 debug**
+*.ipynb
 *.jfif
+*.jpeg
 *.log
 __pycache__/**
-*.gif
