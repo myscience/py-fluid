@@ -1,0 +1,6 @@
+[DBG]**
+debug**
+*.jfif
+*.log
+__pycache__/**
+*.gif
