@@ -1,6 +1,6 @@
 # Simple Fluid Simulation in Python
 
-![Van_Gogh](res/van_gogh.gif)
+![Van_Gogh](2D/res/van_gogh.gif)
 
 A minimal python implementation of a `PIC|FLIP` particle-grid fluid solver. Heavily based on Robert Bridson's book [*Fluid Simulation for Computer Graphics*](http://wiki.cgt3d.cn/mediawiki/images/4/43/Fluid_Simulation_for_Computer_Graphics_Second_Edition.pdf).
 
