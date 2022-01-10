@@ -6,5 +6,6 @@ debug**
 *.ipynb
 *.jfif
 *.jpeg
+*.png
 *.log
 __pycache__/**

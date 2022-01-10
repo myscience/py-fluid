@@ -68,11 +68,35 @@ class MACArray(np.ndarray):
         # Return the correct construction of the MAC field
         return cls.__new__(cls, data, off)
 
-    def __call__(self, *args: Any, interp = 'linear') -> List[float]:
+    def __call__(self, P : np.ndarray) -> np.ndarray:
         '''
-            Calling is used to inspect the array in a continuous
-            location, using interpolation to return non-grid values
-            and taking into account the grid field offset. 
+            Fast interpolation of values represented by this array
+            on continous positions identified by the Vec array P. 
+        '''
+
+        key = P - self.off
+        key = np.clip(key, [0] * len(self.shape), self.shape)[:, [1, 0]]
+
+        # Create the interpolation object 
+        x, y = np.arange(self.shape[0]), np.arange(self.shape[1])
+
+        f = RectBivariateSpline(x, y, self)
+        return f(*key.T, grid = False).squeeze()
+
+        # x, y = np.arange(self.shape[1]), np.arange(self.shape[0])
+        # f = interp2d(x, y, self, kind = interp)
+
+        # Run the interpolation for every point provided
+        # return np.array(list(starmap(f, key))).squeeze()
+
+    def at(self, *args: Any, interp = 'linear') -> List[float]:
+        '''
+            Calling the at function is used to inspect the array in a
+            continuous location, using interpolation to return non-grid
+            values and taking into account the grid field offset. 
+            NOTE: This is a SLOW function call because it tries to parse
+                  possibly different arguments. Fast simulations should
+                  use the more narrowly-scoped __call__ method of the class.
         '''
         # Here we dispatch the different ways this function can be called:
         # 1) 2(3)-arguments, interpreted as x, y, (z) coordinates of a single point
@@ -109,17 +133,18 @@ class MACArray(np.ndarray):
         f = RectBivariateSpline(x, y, self)
         return f(*key.T, grid = False).squeeze()
 
-        # x, y = np.arange(self.shape[1]), np.arange(self.shape[0])
-        # f = interp2d(x, y, self, kind = interp)
+    # Taken directly from: 
+    # https://stackoverflow.com/questions/20915502/speedup-scipy-griddata-for-multiple-interpolations-between-two-irregular-grids
+    def fastfit(self, values, vtx, wts, fill_value = np.nan) -> None:
+        ret = np.einsum('nj,nj->n', np.take(values, vtx), wts)
+        ret[np.any(wts < 0, axis = 1)] = fill_value
+        
+        self[...] = ret.reshape(self.shape)
 
-        # Run the interpolation for every point provided
-        # return np.array(list(starmap(f, key))).squeeze()
-
-    def gridfit(self, P, key : str, comp : str = None) -> None:
+    def gridfit(self, P : np.ndarray, values : List[Vec]) -> None:
         # We make use of the scipy griddata interpolation to translate
         # the values of the point back into the grid
-        points = P.locate() - self.off
-        values = [getattr(p.pld[key], comp) if comp else p.pld[key] for p in P]
+        points = P - self.off
 
         x, y = np.arange(self.shape[1]), np.arange(self.shape[0])
         X, Y = np.meshgrid(x, y)
@@ -164,7 +189,7 @@ class MACArray(np.ndarray):
         # * the weights came up as non-zero.
         self.extrapolate(weights == 0)
 
-    def extrapolate(self, marker : np.ndarray) -> None:
+    def extrapolate(self, marker : np.ndarray, max_iter = 50000) -> None:
         MAX_V = 100000
 
         # No need to extrapolate for an all-known grid
@@ -173,20 +198,25 @@ class MACArray(np.ndarray):
         # Prepare an integer helper array
         marker = marker.astype(np.int) * MAX_V
 
-        # Get the grid indices
+        # Get the grid indices and corresponding neighbors
         Idx = np.indices(self.shape).transpose(1, 2, 0)
+        nIdx = self._fnidx2d(Idx).transpose(1, 2, 0, 3)
 
         # * This is the wavefront list, which is initialized with
         # * unknwon indices for which a known neighbour exists
-        W = [tuple(wfidx) for wfidx in Idx.reshape(-1, 2) 
-            if marker[tuple(wfidx)] > 0 and np.any(marker[tuple(self._fnidx2d(wfidx).T)] == 0)]
+        # W = [tuple(wfidx) for wfidx in Idx.reshape(-1, 2) 
+        #     if marker[tuple(wfidx)] > 0 and np.any(marker[tuple(self._fnidx2d(wfidx).T)] == 0)]
+        
+        W = [tuple(wfidx) for wfidx, nidx in zip(Idx.reshape(-1, 2), nIdx.reshape(-1, 5, 2)) 
+            if marker[tuple(wfidx)] > 0 and np.any(marker[tuple(nidx.T)] == 0)]
         marker[tuple(np.array(W).T)] = 1
 
         # * Propagate the wavefront information to unknown values
         t = 0
         while t < len(W):
             idx = W[t]
-            nidx = self._fnidx2d(idx)
+            # nidx = self._fnidx2d(idx)
+            nidx = nIdx[tuple(idx)]
 
             # Set the value to the average of better known values
             mask = marker[tuple(nidx.T)] < marker[idx]
@@ -198,7 +228,7 @@ class MACArray(np.ndarray):
             W += [tuple(idx) for idx in nidx[mask]]
             t += 1
 
-            assert t < 10000, 'Runaway while loop'
+            assert t < max_iter, 'Runaway while loop'
 
     def _h2(self, R : np.ndarray) -> np.ndarray:
         out = np.zeros_like(R)
@@ -241,6 +271,13 @@ class MACArray(np.ndarray):
 
 
     def _fnidx2d(self, idx : np.ndarray, K : int = 1) -> np.ndarray:
+        # def bound(idx): return np.clip(idx, 0, np.array(self.shape) - 1)
+
+        # line = range(-K, K + 1)
+        # nidx = [bound(idx + np.array((i, j))) for i in line 
+        #         for j in line if abs(i) + abs(j) <= K]
+
+        # return np.unique(nidx, axis = 0)
         def bound(idx): return np.clip(idx, 0, np.array(self.shape) - 1)
 
         line = range(-K, K + 1)

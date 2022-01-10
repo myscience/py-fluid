@@ -48,41 +48,39 @@ class Solver:
         '''
 
         fmask = fluid < 0
-        smask = solid < 0
-
-        # ! THIS FUNCTION NEEDS SOME OPTIMIZATION
-        def nonsolid(idx):
-            if fmask[tuple(idx)]:
-                nidx = fmask._fnidx2d(idx)
-
-                # NOTE: We subtract one because the function return the idx
-                #       itself among its nearest neighbors, but we already
-                #       know that idx is a fluid voxel, so it will contribute
-                #       with a 1 in the following sum.
-                return sum(~smask[tuple(nidx.T)]) - 1
-            else:
-                return 0
+        smask = solid > 0
 
         # The diagonal entries are equal to the number of non-solid neighbors
-        # ? MAYBE: np.apply_along_axis()
-        # self.Adiag = np.where(fmask[idx], np.sum(~smask[]), 0.)
-        self.Adiag = [nonsolid(idx) * scale for idx in np.ndindex(self.shape)]
+        fshape = self.shape[0], self.shape[1]
+        idxs = np.indices(fshape)
+
+        left, right = np.array([[[0]], [[-1]]]), np.array([[[0]], [[1]]])
+        top, bottom = np.array([[[1]], [[0]]]), np.array([[[-1]], [[0]]])
+
+        # Compute the number of non-solid neighbors to a given idx
+        nsnb = smask[tuple(np.maximum(idxs + left, 0))].astype(np.int) +\
+               smask[tuple(np.minimum(idxs + right, self.shape[1] - 1))].astype(np.int) +\
+               smask[tuple(np.minimum(idxs + top, self.shape[0] - 1))].astype(np.int) +\
+               smask[tuple(np.maximum(idxs + bottom, 0))].astype(np.int)
+
+        # Set to zero the idxs that are not fluid voxels
+        self.Adiag = (fmask * nsnb).ravel() * scale
+
+        # self.Adiag = [nonsolid(idx) * scale for idx in np.ndindex(self.shape)]
 
         # The AplusX entries are equal to the -scale constant if the positive
         # x neighbor is a fluid voxel, otherwise they are kept to zero
         rshape = self.shape[0], self.shape[1] - 1
-        tshape = self.shape[0] - 1, self.shape[0]
+        tshape = self.shape[0] - 1, self.shape[1]
         self.AplusX = [-scale if (fmask[idx] and fmask[idx[0], idx[1] + 1]) else 0 
                     for idx in np.ndindex(rshape)]
-        self.AplusY = [-scale if (fmask[idx] and fmask[idx[0] + 1, idx[0]]) else 0
+        self.AplusY = [-scale if (fmask[idx] and fmask[idx[0] + 1, idx[1]]) else 0
                     for idx in np.ndindex(tshape)]
 
-
-        w = self.shape[1]
+        w = self.shape[0]
         ridx = np.ravel_multi_index(np.indices(rshape), self.shape).ravel()
         tidx = np.ravel_multi_index(np.indices(tshape), self.shape).ravel()
 
-        # self.A = sp.lil_matrix((self.size, self.size))
         self.A.setdiag(self.Adiag)
 
         self.A[ridx, ridx + 1] = self.AplusX

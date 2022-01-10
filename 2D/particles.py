@@ -1,10 +1,13 @@
 import numpy as np
+from numpy.lib.utils import deprecate
 import utils
 import mac
 from utils import Vec, Particle
 from levelset import Levelset
 
-from typing import List, Union
+import scipy.spatial.qhull as qhull
+
+from typing import List, Tuple, Union
 from itertools import repeat
 
 class Swarm:
@@ -57,6 +60,9 @@ class Swarm:
         else: raise ValueError(f'Unknown payload type. Got {type(payload)}') 
 
         self.swarm = [Particle({'pos' : l, 'vel' : v, **p}) for l, v, p in zip(L, V, P)]
+
+        # Point triangulation stored for faster lookup
+        self.tri = None
 
     def __len__(self) -> int:
         return len(self.swarm)
@@ -117,8 +123,11 @@ class Swarm:
         Pf = P1 + dt / dx * (2 * K1 + 3 * K2 + 4 * K3) / 9.
 
         # Update particle position with grid-based units
-        [p.update('pos', px, 'x') for p, px in zip(self.swarm, Pf[:, 0])]
-        [p.update('pos', py, 'y') for p, py in zip(self.swarm, Pf[:, 1])]
+        [p.update('pos', np.clip(px, *self.domain[:2]), 'x') for p, px in zip(self.swarm, Pf[:, 0])]
+        [p.update('pos', np.clip(py, *self.domain[2:]), 'y') for p, py in zip(self.swarm, Pf[:, 1])]
+
+        # Invalidate previous triangulation
+        self.tri = None
 
     def get(self, mask : Levelset) -> List[Particle]:
         return [P for P, v in zip(self.swarm, mask([P.pos for P in self.swarm]) < 0) if v]
@@ -135,3 +144,48 @@ class Swarm:
    
     def collect(self, key : str, comp : str = None) -> List:
         return [getattr(P.pld[key], comp) if comp else P.pld[key] for P in self.swarm]
+
+    def triangulate(self, fls : Levelset, pos = None) -> qhull.Delaunay:
+        pos = self.locate() if pos is None else pos
+
+        self.tri = qhull.Delaunay(pos)
+
+        # * From triangulation we remove those triangles whose barycentric
+        # * coordinate lies outside the fluid domain
+        bary = np.mean(pos[self.tri.simplices], axis = 1)
+        mask = fls(bary) > 0
+
+        # ! FIXME: Altering the simplices array breaks the subsequent
+        # !        call to find_simplex
+        self.tri.deprecated = {s_idx for s_idx in np.arange(len(mask))[mask]}
+        # self.tri.neighbors = self.tri.neighbors[mask]
+        # self.tri.equations = self.tri.equations[mask]
+
+        return self.tri
+
+    # Taken from:
+    # https://stackoverflow.com/questions/20915502/speedup-scipy-griddata-for-multiple-interpolations-between-two-irregular-grids
+    def gridify(self, grid : Tuple[int, int], fls : Levelset, off = None) -> Tuple[np.ndarray, np.ndarray]:
+        d = len(grid)
+
+        x, y = np.arange(grid[1]), np.arange(grid[0])
+        off = Vec([0] * d) if off is None else off
+
+        # Create the array storing the grid point location, optionally
+        # offset by a costant vector
+        uvw = np.stack(np.meshgrid(x, y), axis = -1).reshape(-1, d) + off
+
+        # Get the point triangulation if not pre-computed
+        tri = self.triangulate(fls) if self.tri is None else self.tri
+
+        simplex = tri.find_simplex(uvw)
+
+        # Filter out simplex indices if they are deprecated
+        simplex = [s if s not in tri.deprecated else -1 for s in simplex]
+
+        vertices = np.take(tri.simplices, simplex, axis = 0)
+        temp = np.take(tri.transform, simplex, axis = 0)
+        delta = uvw - temp[:, d]
+        bary = np.einsum('njk,nk->nj', temp[:, :d, :], delta)
+
+        return vertices, np.hstack((bary, 1 - bary.sum(axis=1, keepdims=True)))
